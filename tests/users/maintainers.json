@@ -1,0 +1,16 @@
+{
+  "server": {
+    "hydra":
+    {
+      "jeff": {
+        "email": "email@me.com",
+        "irc": "jeff",
+        "phone": "830-453-2345"
+      },
+      "mike": {
+        "email": "mike@aol.com"
+      }
+    }
+
+  }
+}

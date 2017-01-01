@@ -1,25 +1,26 @@
-#!/usr/bin/python
+#!/usr/bin/python3
 #
 # This is the main server application. This is run and then opens some threads
 # so that it may run some server tasks in parallel
-#
-# Execution Diagram
-#
-# Main thread
-# |- Server Server Thread - handles incoming server information
-# |- Battery Server Thread - handles incoming battery information
-# |- Sensor Server Thread -handles incoming sensors information
-# \- Server Cleaner Thread - handles cleaning of old server information
 
 # Debugging Constants
 DEBUG_NET = True # print network data packet and source IP
 
-# Program Constants
+# Program Constants - these configure operation of the server
+# TCP PORTS
+TCP_SERVER_PORT = 2204
+TCP_SENSOR_PORT = 2206
+# UDP PORTS
 UDP_SERVER_PORT = 2204
 UDP_BATTERY_PORT = 2205
 UDP_SENSOR_PORT = 2206
 UDP_NETWORK_PORT = 2207
-WEB_PATH = "/srv/http" # location of API directory (NO trailing slash)
+# PATHS
+WEB_PATH = "/srv/http" # location of webserver directory (NO trailing slash)
+# FLAGS
+ENABLE_TCP = True # For compatibility with TCP only connections on certain devices
+ENABLE_UDP = True # NOT recommended to set to false
+ENABLE_REST = True # Enables ro REST api at $WEB_PATH/api
 
 # imports in no particular order
 import threading
@@ -41,9 +42,10 @@ servers = {} # Stores ServerItems
 batteries = {} # Stores BatteryItems
 sensors = {} # Stores SensorItems
 networks = {} # Stores NetworkItems
+maintainers = {} # Stores Maintainer Items
 
 class SensorType(Enum):
-    RAW = 1; # RAW data
+    RAW = 1; # RAW data (direct display plus special character removal)
     THERMAL = 2; # Thermal information from a 10K thermal resistor, as raw ADC from 0 to 1023
     BOOLEAN = 3; # Boolean information
 
@@ -125,11 +127,11 @@ class Object:
         return json.dumps(self, default=lambda o: o.__dict__,
             sort_keys=True, indent=4)
 
-# Cleans all the shit that people put into this application
+# Cleans all the shit that people put into this application.. *cough*Grissess*cough*
 def sanitize(input):
-    return input.replace('\\', '').replace('/', '').replace('<', '').replace('>', '').replace('?', '').replace('.py', '')
+    return input.replace('\\', '').replace('/', '').replace('<', '').replace('>', '').replace('?', '').replace('.py', '').replace('\n','').replace('\r','')
 
-def server():
+def udp_server():
     print ("starting server server on UDP port " + str(UDP_SERVER_PORT))
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -151,11 +153,42 @@ def server():
                 s.addKey(serverkey[0], serverkey[1])
                 servers[name] = s
             except:
-                print("Malformed packet recieved from " + addr[0] + " on servers server, containing the string " + message)
+                print("Malformed packet recieved from " + addr[0] + " on udp servers server, containing the string " + message)
         except:
             pass # well dang GRM
 
-def battery():
+def tcp_server():
+    print ("starting server server on TCP port " + str(TCP_SERVER_PORT))
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind(("0.0.0.0", TCP_SERVER_PORT))
+    sock.listen(1)
+    while True:
+        try:
+            conn, addr = sock.accept()
+            # get rid of all path or HTML injections
+            data = conn.recv(1024)
+            if data:
+                # get rid of all path or HTML injections
+                message = sanitize(data.decode("utf-8"))
+                if DEBUG_NET: print ("recieved server message: " + message + " from " + str(addr[0]))
+                try:
+                    name = whoistable[addr[0]]
+                except:
+                    name = "grm plz stahp"
+                if name not in servers:
+                    s = ServerItem(name)
+                try:
+                    serverkey = message.split("|")
+                    s.addKey(serverkey[0], serverkey[1])
+                    servers[name] = s
+                except:
+                    print("Malformed packet recieved from " + addr[0] + " on tcp servers server, containing the string " + message)
+        except Exception as e:
+            print (e)
+            pass # well dang GRM
+
+def udp_battery():
     print ("starting battery server on UDP port " + str(UDP_BATTERY_PORT))
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -172,11 +205,11 @@ def battery():
                 timeleft = rec[2]
                 batteries[name] = BatteryItem(name, percent, timeleft)
             except:
-                print("Malformed packet recieved from " + addr[0] + " on battery server, containing the string " + message)
+                print("Malformed packet recieved from " + addr[0] + " on udp battery server, containing the string " + message)
         except:
             pass # again, well dang GRM
 
-def sensor():
+def udp_sensor():
     print ("starting sensor server on UDP port " + str(UDP_SENSOR_PORT))
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -200,11 +233,11 @@ def sensor():
                     stp = SensorType.IBOOLEAN
                 sensors[name] = SensorItem(name, stp, value)
             except:
-                print("Malformed packet recieved from " + addr[0] + " on sensor server, containing the string " + message)
+                print("Malformed packet recieved from " + addr[0] + " on udp sensor server, containing the string " + message)
         except:
             pass # again, well dang GRM
 
-def network():
+def udp_network():
     print ("starting sensor server on UDP port " + str(UDP_NETWORK_PORT))
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -224,7 +257,7 @@ def network():
                 networks[switch][port].setUp(up)
                 networks[switch][port].setDown(down)
             except:
-                print("Malformed packet recieved from " + addr[0] + " on sensor server, containing the string " + message)
+                print("Malformed packet recieved from " + addr[0] + " on udp network server, containing the string " + message)
         except:
             pass # again, well dang GRM
 
@@ -237,41 +270,60 @@ def reporting():
         report_file.close()
         time.sleep(5)
 
-
  ##################
 # Main Exec Thread #
  ##################
 
-# Read whitelist files and server whois so that we can get some data
-whoisfile = open('configs/server-whois.txt', 'r')
-for line in whoisfile:
-    if '|' in line:
-        spline = line.split("|")
-        whoistable[spline[0]] = spline[1].strip()
-battfile = open('configs/battery-whitelist.txt', 'r')
-for line in whoisfile:
-    if '|' in line:
-        spline = line.split("|")
-        whitebatt[spline[0]] = spline[1].strip()
-sensefile = open('configs/sensor-whitelist.txt', 'r')
-for line in whoisfile:
-    if '|' in line:
-        spline = line.split("|")
-        whitesense[spline[0]] = spline[1].strip()
-netfile = open('configs/network-whitelist.txt', 'r')
-for line in whoisfile:
-    if '|' in line:
-        spline = line.split("|")
-        whitenet[spline[0]] = spline[1].strip()
+try:
+    # Read whitelist files and server whois so that we can get some data
+    whoisfile = open('configs/server-whois.txt', 'r')
+    for line in whoisfile:
+        if '|' in line:
+            spline = line.split("|")
+            whoistable[spline[0]] = spline[1].strip()
+    battfile = open('configs/battery-whitelist.txt', 'r')
+    for line in whoisfile:
+        if '|' in line:
+            spline = line.split("|")
+            whitebatt[spline[0]] = spline[1].strip()
+    sensefile = open('configs/sensor-whitelist.txt', 'r')
+    for line in whoisfile:
+        if '|' in line:
+            spline = line.split("|")
+            whitesense[spline[0]] = spline[1].strip()
+    netfile = open('configs/network-whitelist.txt', 'r')
+    for line in whoisfile:
+        if '|' in line:
+            spline = line.split("|")
+            whitenet[spline[0]] = spline[1].strip()
+    maintainerfilecontents = ""
+    maintainersfile = open('users/maintainers.json','r')
+    for line in whoisfile:
+        maintainerfilecontents += line
+    try:
+        maintainers = json.loads(maintainersfilecontents)
+    except:
+        pass
+except Exception as e:
+    # ACK!!! Dang users!
+    print("Something happened wihile reading whitelists and maintainers")
+    print(e)
+    exit(0)
 
 # Start all of the server threads
-t1 = threading.Thread(target=server)
+t1 = threading.Thread(target=udp_server)
 t1.start()
-t2 = threading.Thread(target=battery)
+t2 = threading.Thread(target=udp_battery)
 t2.start()
-t3 = threading.Thread(target=sensor)
+t3 = threading.Thread(target=udp_sensor)
 t3.start()
-t4 = threading.Thread(target=network)
+t4 = threading.Thread(target=udp_network)
 t4.start()
 t5 = threading.Thread(target=reporting)
 t5.start()
+if ENABLE_TCP:
+    t6 = threading.Thread(target=tcp_server)
+    t6.start()
+    #t7 = threading.Thread(target=tcp_sensor)
+    #t7.start()
+    pass
